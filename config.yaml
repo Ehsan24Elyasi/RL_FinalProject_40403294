@@ -1,0 +1,33 @@
+project:
+  student_id: "40403294"
+  base_seed: 9
+maze:
+  size: 16
+  source_map: environments/maps/source.json
+  intended_probability: 0.8
+  perpendicular_slip_probability: 0.1
+  max_steps_multiplier: 3
+rewards:
+  step: -0.1
+  collision_extra: -0.9
+  penalty_extra: -1.9
+  first_key: 5.0
+  goal: 20.0
+shaping:
+  enabled: false
+  gamma: 0.95
+  scale: 1.0
+planning:
+  theta: 1.0e-10
+  max_sweeps: 100000
+  tie_tolerance: 1.0e-10
+  output_dir: results/models/value_iteration
+  required_runs:
+    - reward_mode: shaped
+      gamma: 0.90
+    - reward_mode: shaped
+      gamma: 0.95
+    - reward_mode: shaped
+      gamma: 0.99
+    - reward_mode: sparse
+      gamma: 0.95
