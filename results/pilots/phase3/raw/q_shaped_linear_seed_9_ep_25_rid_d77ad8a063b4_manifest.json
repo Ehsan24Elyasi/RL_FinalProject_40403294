@@ -1,0 +1,28 @@
+{
+  "algorithm": "manual_off_policy_q_learning",
+  "artifacts": {
+    "audit": {
+      "bytes": 381909,
+      "path": "q_shaped_linear_seed_9_ep_25_rid_d77ad8a063b4_audit.csv",
+      "row_count": 471,
+      "sha256": "7639bd5a1da5f3a389e40eb5a1acf9980967152f141ffa2b144345d80629defe"
+    },
+    "episode_metrics": {
+      "bytes": 18558,
+      "path": "q_shaped_linear_seed_9_ep_25_rid_d77ad8a063b4_episodes.csv",
+      "row_count": 25,
+      "sha256": "aaff508e58cf831bd25d1d87c7d69bd3114586ae7a026924de4b50648570762b"
+    },
+    "model": {
+      "bytes": 21222,
+      "path": "../models/q_shaped_linear_seed_9_ep_25_rid_d77ad8a063b4.npz",
+      "sha256": "8ed6a31864861fc4a35e6b1224dbf508b628d0887004523144c066521cc2d192"
+    }
+  },
+  "complete": true,
+  "csv_schema_version": 1,
+  "manifest_schema_version": 1,
+  "run_config_json": "{\"actions\":{\"order\":[\"UP\",\"RIGHT\",\"DOWN\",\"LEFT\"]},\"algorithm\":\"manual_off_policy_q_learning\",\"behavior_policy\":{\"exploration\":\"uniform_all_actions\",\"identifier\":\"epsilon_greedy_uniform_exploration_uniform_exact_max_ties\",\"tie_breaking\":\"uniform_exact_max\"},\"episode_semantics\":{\"termination\":\"goal_no_bootstrap\",\"truncation\":\"max_steps_bootstrap_then_end\"},\"learning\":{\"alpha\":0.1,\"audit_episode\":5,\"decay_episodes\":20,\"episodes\":25,\"epsilon_end\":0.05,\"epsilon_start\":1.0,\"gamma\":0.95,\"reward_mode\":\"shaped\",\"schedule\":\"linear\"},\"map\":{\"checksum\":\"48e0cfae201409ecb45a928e016475129cf595191c669bffb13c554389f4bfe1\",\"cols\":16,\"max_steps\":471,\"rows\":16},\"q_initialization\":{\"identifier\":\"valid_zero_walls_nan_terminal_zero\",\"terminal_states\":0.0,\"valid_states\":0.0,\"walls\":\"NaN\"},\"rewards\":{\"collision_extra\":-0.9,\"first_key\":5.0,\"goal\":20.0,\"penalty_extra\":-1.9,\"shaping_scale\":1.0,\"step\":-0.1},\"schema_version\":1,\"seeds\":{\"behavior\":5941392204501240012,\"derivation\":\"numpy.SeedSequence(root).spawn(2); uint64 child state\",\"root\":9,\"transition\":9624548280144602028},\"shaping\":{\"enabled\":true,\"method\":\"normalized_completion_distance\",\"scale\":1.0,\"version\":1},\"student\":{\"base_seed\":9,\"student_id\":\"40403294\"},\"transitions\":{\"intended_probability\":0.8,\"perpendicular_slip_probability\":0.1}}",
+  "run_id": "q-learning-d77ad8a063b4a315d8d14ac2cf3db3644ef52255f730736fc0304873c7e41ab2",
+  "semantic_config_hash": "d77ad8a063b4a315d8d14ac2cf3db3644ef52255f730736fc0304873c7e41ab2"
+}

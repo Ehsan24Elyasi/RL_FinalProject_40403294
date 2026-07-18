@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from agents.q_learning import SHAPING_VERSION, SUPPORTED_SHAPING_METHOD
 from environments.maze import MazeMDP, RewardSpec
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -40,6 +41,47 @@ class PlanningConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class QLearningRun:
+    reward_mode: str
+    schedule: str
+    seed: int
+    episodes: int = 5_000
+
+    def __post_init__(self) -> None:
+        if self.reward_mode not in {"sparse", "shaped"}:
+            raise ValueError("Q-Learning run reward_mode must be 'sparse' or 'shaped'")
+        if self.schedule not in {"linear", "exponential"}:
+            raise ValueError("Q-Learning run schedule must be 'linear' or 'exponential'")
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("Q-Learning run seed must be a nonnegative integer")
+        if isinstance(self.episodes, bool) or not isinstance(self.episodes, int) or self.episodes <= 0:
+            raise ValueError("Q-Learning run episodes must be a positive integer")
+
+    @property
+    def artifact_stem(self) -> str:
+        return (
+            f"q_{self.reward_mode}_{self.schedule}_seed_{self.seed}"
+            f"_ep_{self.episodes}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class QLearningSettings:
+    gamma: float
+    alpha: float
+    episodes: int
+    shaping_method: str
+    shaping_version: int
+    epsilon_start: float
+    epsilon_end: float
+    decay_episodes: int
+    audit_episode: int
+    model_dir: Path
+    raw_dir: Path
+    required_runs: tuple[QLearningRun, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OperationalConfig:
     path: Path
     student_id: str
@@ -48,6 +90,7 @@ class OperationalConfig:
     source_map: Path
     rewards: RewardSpec
     planning: PlanningConfig
+    q_learning: QLearningSettings
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -57,6 +100,8 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 
 def _finite_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, not bool")
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
@@ -64,6 +109,14 @@ def _finite_float(value: Any, name: str) -> float:
     if not (-float("inf") < result < float("inf")):
         raise ValueError(f"{name} must be finite")
     return result
+
+
+def _strict_int(value: Any, name: str, *, minimum: int | None = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
@@ -80,19 +133,35 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
     rewards_raw = _mapping(root.get("rewards"), "rewards")
     shaping = _mapping(root.get("shaping"), "shaping")
     planning_raw = _mapping(root.get("planning"), "planning")
+    q_raw = _mapping(root.get("q_learning"), "q_learning")
 
     intended = _finite_float(maze.get("intended_probability"), "maze.intended_probability")
     slip = _finite_float(
         maze.get("perpendicular_slip_probability"),
         "maze.perpendicular_slip_probability",
     )
-    multiplier = int(maze.get("max_steps_multiplier", 0))
+    multiplier = _strict_int(
+        maze.get("max_steps_multiplier"), "maze.max_steps_multiplier", minimum=1
+    )
     if intended != MazeMDP.INTENDED_PROBABILITY or slip != MazeMDP.SLIP_PROBABILITY:
         raise ValueError(
             "config transition probabilities must match MazeMDP's fixed 0.8/0.1/0.1"
         )
     if multiplier != 3:
         raise ValueError("maze.max_steps_multiplier must match the fixed value 3")
+
+    shaping_method = str(shaping.get("method", ""))
+    shaping_version = _strict_int(
+        shaping.get("version"), "shaping.version", minimum=1
+    )
+    if set(shaping) != {"method", "version", "scale"}:
+        raise ValueError("shaping must contain exactly method, version, and scale")
+    if shaping_method != SUPPORTED_SHAPING_METHOD:
+        raise ValueError(
+            f"shaping.method must be {SUPPORTED_SHAPING_METHOD!r}"
+        )
+    if shaping_version != SHAPING_VERSION:
+        raise ValueError(f"shaping.version must be {SHAPING_VERSION}")
 
     reward_spec = RewardSpec(
         step=_finite_float(rewards_raw.get("step"), "rewards.step"),
@@ -111,7 +180,9 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
     tie_tolerance = _finite_float(
         planning_raw.get("tie_tolerance"), "planning.tie_tolerance"
     )
-    max_sweeps = int(planning_raw.get("max_sweeps", 0))
+    max_sweeps = _strict_int(
+        planning_raw.get("max_sweeps"), "planning.max_sweeps", minimum=1
+    )
     if theta <= 0.0:
         raise ValueError("planning.theta must be positive")
     if tie_tolerance < 0.0:
@@ -140,19 +211,81 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
     if runs != expected:
         raise ValueError("planning.required_runs must be shaped .90/.95/.99 then sparse .95")
 
+    q_gamma = _finite_float(q_raw.get("gamma"), "q_learning.gamma")
+    q_alpha = _finite_float(q_raw.get("alpha"), "q_learning.alpha")
+    q_episodes = _strict_int(
+        q_raw.get("episodes"), "q_learning.episodes", minimum=1
+    )
+    epsilon_start = _finite_float(
+        q_raw.get("epsilon_start"), "q_learning.epsilon_start"
+    )
+    epsilon_end = _finite_float(q_raw.get("epsilon_end"), "q_learning.epsilon_end")
+    decay_episodes = _strict_int(
+        q_raw.get("decay_episodes"), "q_learning.decay_episodes", minimum=2
+    )
+    audit_episode = _strict_int(
+        q_raw.get("audit_episode"), "q_learning.audit_episode", minimum=1
+    )
+    if not 0.0 <= q_gamma < 1.0:
+        raise ValueError("q_learning.gamma must be in [0, 1)")
+    if not 0.0 < q_alpha <= 1.0:
+        raise ValueError("q_learning.alpha must be in (0, 1]")
+    if q_episodes <= 0:
+        raise ValueError("q_learning.episodes must be positive")
+    if not 0.0 <= epsilon_end <= epsilon_start <= 1.0:
+        raise ValueError(
+            "q_learning epsilon values must satisfy 0 <= end <= start <= 1"
+        )
+    if decay_episodes < 2:
+        raise ValueError("q_learning.decay_episodes must be at least 2")
+    if not 1 <= audit_episode <= q_episodes:
+        raise ValueError("q_learning.audit_episode must be within episodes")
+
+    q_runs_raw = q_raw.get("required_runs")
+    if not isinstance(q_runs_raw, list) or not q_runs_raw:
+        raise ValueError("q_learning.required_runs must be a nonempty list")
+    def parse_q_run(item: Any) -> QLearningRun:
+        run = _mapping(item, "Q-Learning run")
+        return QLearningRun(
+            reward_mode=str(run.get("reward_mode")),
+            schedule=str(run.get("schedule")),
+            seed=_strict_int(run.get("seed"), "Q-Learning run seed", minimum=0),
+            episodes=_strict_int(
+                run.get("episodes", q_episodes),
+                "Q-Learning run episodes",
+                minimum=1,
+            ),
+        )
+
+    q_runs = tuple(parse_q_run(item) for item in q_runs_raw)
+    expected_q_runs = (
+        QLearningRun("shaped", "linear", 9, 5_000),
+        QLearningRun("shaped", "exponential", 9, 5_000),
+    )
+    if q_runs != expected_q_runs:
+        raise ValueError(
+            "q_learning.required_runs must be shaped linear/exponential, seed 9, 5000 episodes"
+        )
+
     base = config_path.parent
     source_map = Path(str(maze.get("source_map")))
     output_dir = Path(str(planning_raw.get("output_dir")))
+    q_model_dir = Path(str(q_raw.get("model_dir")))
+    q_raw_dir = Path(str(q_raw.get("raw_dir")))
     if not source_map.is_absolute():
         source_map = (base / source_map).resolve()
     if not output_dir.is_absolute():
         output_dir = (base / output_dir).resolve()
+    if not q_model_dir.is_absolute():
+        q_model_dir = (base / q_model_dir).resolve()
+    if not q_raw_dir.is_absolute():
+        q_raw_dir = (base / q_raw_dir).resolve()
 
     student_id = str(project.get("student_id", "")).strip()
     if not student_id:
         raise ValueError("project.student_id must not be empty")
-    base_seed = int(project.get("base_seed"))
-    maze_size = int(maze.get("size"))
+    base_seed = _strict_int(project.get("base_seed"), "project.base_seed", minimum=0)
+    maze_size = _strict_int(maze.get("size"), "maze.size", minimum=1)
     if maze_size <= 0:
         raise ValueError("maze.size must be positive")
 
@@ -169,5 +302,19 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
             tie_tolerance=tie_tolerance,
             output_dir=output_dir,
             required_runs=runs,
+        ),
+        q_learning=QLearningSettings(
+            gamma=q_gamma,
+            alpha=q_alpha,
+            episodes=q_episodes,
+            shaping_method=shaping_method,
+            shaping_version=shaping_version,
+            epsilon_start=epsilon_start,
+            epsilon_end=epsilon_end,
+            decay_episodes=decay_episodes,
+            audit_episode=audit_episode,
+            model_dir=q_model_dir,
+            raw_dir=q_raw_dir,
+            required_runs=q_runs,
         ),
     )

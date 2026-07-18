@@ -14,8 +14,8 @@ rewards:
   first_key: 5.0
   goal: 20.0
 shaping:
-  enabled: false
-  gamma: 0.95
+  method: normalized_completion_distance
+  version: 1
   scale: 1.0
 planning:
   theta: 1.0e-10
@@ -31,3 +31,22 @@ planning:
       gamma: 0.99
     - reward_mode: sparse
       gamma: 0.95
+q_learning:
+  gamma: 0.95
+  alpha: 0.1
+  episodes: 5000
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  decay_episodes: 4000
+  audit_episode: 1
+  model_dir: results/models/q_learning
+  raw_dir: results/raw/q_learning
+  required_runs:
+    - reward_mode: shaped
+      schedule: linear
+      seed: 9
+      episodes: 5000
+    - reward_mode: shaped
+      schedule: exponential
+      seed: 9
+      episodes: 5000

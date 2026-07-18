@@ -1,4 +1,4 @@
-"""Command-line entry point for the maze and Value Iteration baseline."""
+"""Command-line entry point for the maze, Value Iteration, and Q-Learning."""
 
 from __future__ import annotations
 
@@ -7,13 +7,30 @@ from pathlib import Path
 import random
 
 from agents.common import load_value_iteration_npz, save_value_iteration_npz
+from agents.q_learning import (
+    QLearningBundlePaths,
+    QLearningConfig,
+    QLearningResult,
+    build_q_learning_run_identity,
+    derive_q_learning_seeds,
+    preflight_q_learning_bundle,
+    save_q_learning_bundle,
+    train_q_learning,
+    validate_q_learning_bundle,
+)
 from agents.value_iteration import (
     ValueIterationConfig,
     ValueIterationConvergenceError,
     compare_policy_invariance,
     value_iteration,
 )
-from config import DEFAULT_CONFIG_PATH, OperationalConfig, PlanningRun, load_config
+from config import (
+    DEFAULT_CONFIG_PATH,
+    OperationalConfig,
+    PlanningRun,
+    QLearningRun,
+    load_config,
+)
 from environments.generator import (
     DEFAULT_MAP_PATH,
     generate_source_map,
@@ -77,6 +94,36 @@ def _parser() -> argparse.ArgumentParser:
     invariance.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     invariance.add_argument("--sparse", type=Path)
     invariance.add_argument("--shaped", type=Path)
+
+    q = subparsers.add_parser("q", help="Q-Learning operations")
+    q_subparsers = q.add_subparsers(dest="q_command", required=True)
+
+    train = q_subparsers.add_parser("train", help="train and save one Q-Learning run")
+    train.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    train.add_argument("--reward-mode", choices=("sparse", "shaped"), required=True)
+    train.add_argument("--schedule", choices=("linear", "exponential"), required=True)
+    train.add_argument("--seed", type=int)
+    train.add_argument("--episodes", type=_positive_int)
+    train.add_argument("--decay-episodes", type=_positive_int)
+    train.add_argument("--audit-episode", type=_positive_int)
+    train.add_argument(
+        "--output-dir",
+        type=Path,
+        help="pilot directory containing models/ and raw/ subdirectories",
+    )
+    train.add_argument("--overwrite", action="store_true")
+
+    q_required = q_subparsers.add_parser(
+        "required", help="run the two required shaped 5000-episode trainings"
+    )
+    q_required.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    q_required.add_argument("--overwrite", action="store_true")
+
+    q_inspect = q_subparsers.add_parser(
+        "inspect", help="validate and summarize a Q-Learning NPZ model"
+    )
+    q_inspect.add_argument("model", type=Path)
+    q_inspect.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     return parser
 
 
@@ -174,6 +221,163 @@ def _inspect(model: Path, config_path: Path) -> None:
     )
 
 
+def _q_components(
+    config: OperationalConfig,
+    run: QLearningRun,
+    *,
+    decay_episodes: int,
+    audit_episode: int,
+):
+    spec = _validate_config_map(config)
+    mdp = MazeMDP(
+        spec,
+        config.rewards,
+        gamma=config.q_learning.gamma,
+        use_shaping=run.reward_mode == "shaped",
+    )
+    q_config = QLearningConfig(
+        gamma=config.q_learning.gamma,
+        alpha=config.q_learning.alpha,
+        episodes=run.episodes,
+        shaping_method=config.q_learning.shaping_method,
+        shaping_version=config.q_learning.shaping_version,
+        epsilon_start=config.q_learning.epsilon_start,
+        epsilon_end=config.q_learning.epsilon_end,
+        decay_episodes=decay_episodes,
+        schedule=run.schedule,
+        reward_mode=run.reward_mode,
+        audit_episode=audit_episode,
+    )
+    seeds = derive_q_learning_seeds(run.seed)
+    identity = build_q_learning_run_identity(mdp, q_config, seeds)
+    return spec, mdp, q_config, identity
+
+
+def _q_paths(
+    config: OperationalConfig,
+    run: QLearningRun,
+    identity,
+    output_dir: Path | None = None,
+) -> QLearningBundlePaths:
+    if output_dir is None:
+        model_dir = config.q_learning.model_dir
+        raw_dir = config.q_learning.raw_dir
+    else:
+        model_dir = output_dir / "models"
+        raw_dir = output_dir / "raw"
+    stem = f"{run.artifact_stem}_rid_{identity.short_id}"
+    return QLearningBundlePaths(
+        model=model_dir / f"{stem}.npz",
+        episode_metrics=raw_dir / f"{stem}_episodes.csv",
+        audit=raw_dir / f"{stem}_audit.csv",
+        manifest=raw_dir / f"{stem}_manifest.json",
+    )
+
+
+def _q_summary(result: QLearningResult) -> str:
+    metrics = result.episode_metrics
+    metadata = result.metadata()
+    successes = int(metadata["total_successes"])
+    truncations = int(metadata["total_truncated"])
+    mean_steps = int(metadata["total_steps"]) / len(metrics)
+    mean_learning_return = sum(metric.learning_return for metric in metrics) / len(metrics)
+    return (
+        f"episodes={len(metrics)}, successes={successes}, truncations={truncations}, "
+        f"success_rate={successes / len(metrics):.3f}, mean_steps={mean_steps:.2f}, "
+        f"mean_learning_return={mean_learning_return:.6f}, "
+        f"runtime={result.runtime_seconds:.3f}s"
+    )
+
+
+def _train_q(
+    config: OperationalConfig,
+    run: QLearningRun,
+    *,
+    decay_episodes: int,
+    audit_episode: int,
+    output_dir: Path | None,
+    overwrite: bool,
+):
+    spec, mdp, q_config, identity = _q_components(
+        config,
+        run,
+        decay_episodes=decay_episodes,
+        audit_episode=audit_episode,
+    )
+    paths = _q_paths(config, run, identity, output_dir)
+    preflight_q_learning_bundle(paths, overwrite=overwrite)
+    result = train_q_learning(
+        mdp, q_config, root_seed=run.seed, identity=identity
+    )
+    loaded, manifest = save_q_learning_bundle(
+        paths,
+        result,
+        expected_spec=spec,
+        overwrite=overwrite,
+    )
+    print(
+        f"Trained Q-Learning {run.reward_mode} {run.schedule} seed={run.seed}: "
+        f"{_q_summary(result)}"
+    )
+    print(f"Run ID: {identity.run_id}")
+    print(
+        f"Saved and validated bundle model: {paths.model} "
+        f"(steps={int(loaded.metadata['total_steps'])})"
+    )
+    print(f"Episode metrics: {paths.episode_metrics}")
+    print(f"Audit trace: {paths.audit} ({len(result.audit_rows)} rows)")
+    print(f"Completion manifest: {paths.manifest} (complete={manifest['complete']})")
+    return result, loaded, paths
+
+
+def _inspect_q(model: Path, config_path: Path) -> None:
+    config = load_config(config_path)
+    spec = _validate_config_map(config)
+    manifest_path = model.with_name(model.stem + "_manifest.json")
+    if not manifest_path.exists():
+        candidate_dirs = [config.q_learning.raw_dir, model.parent.parent / "raw"]
+        candidates = sorted(
+            {
+                candidate.resolve()
+                for directory in candidate_dirs
+                for candidate in directory.glob(model.stem + "_manifest.json")
+            }
+        )
+        if len(candidates) == 1:
+            manifest_path = candidates[0]
+    loaded, manifest, paths = validate_q_learning_bundle(
+        manifest_path, expected_spec=spec, expected_model=model
+    )
+    metadata = loaded.metadata
+    print(f"Q-Learning model: {paths.model}")
+    print(f"Run ID={metadata['run_id']}; manifest complete={manifest['complete']}")
+    print(
+        f"Mode={metadata['reward_mode']} schedule={metadata['schedule']} "
+        f"seed={int(metadata['root_seed'])} episodes={int(metadata['episodes'])}"
+    )
+    print(
+        f"Gamma={float(metadata['gamma']):.2f} alpha={float(metadata['alpha']):.2f} "
+        f"epsilon={float(metadata['epsilon_start']):.2f}->"
+        f"{float(metadata['epsilon_end']):.2f} through episode "
+        f"{int(metadata['decay_episodes'])}"
+    )
+    print(
+        f"Steps={int(metadata['total_steps'])}; successes={int(metadata['total_successes'])}; "
+        f"truncations={int(metadata['total_truncated'])}; runtime="
+        f"{float(metadata['runtime_seconds']):.3f}s"
+    )
+    reachable_count = int(loaded.reachable_state_mask.sum())
+    visited_count = int(
+        (loaded.state_visit_counts > 0)[loaded.reachable_state_mask].sum()
+    )
+    print(
+        f"Shape={loaded.q_values.shape}; state visits={int(metadata['state_visit_total'])}; "
+        f"reachable states={reachable_count}; visited reachable={visited_count} "
+        f"({visited_count / reachable_count:.1%}); checksum={metadata['map_checksum']}"
+    )
+    print(f"Manifest: {paths.manifest}")
+
+
 def _verify_invariance(config_path: Path, sparse_path: Path | None, shaped_path: Path | None) -> bool:
     config = load_config(config_path)
     spec = _validate_config_map(config)
@@ -233,35 +437,87 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         config = load_config(args.config)
-        if args.vi_command == "solve":
-            run = PlanningRun(args.reward_mode, args.gamma)
-            output = args.output or _default_model_path(config, run)
-            _solve(config, run, output, args.overwrite)
-            return 0
-        if args.vi_command == "required":
-            results = {}
-            for run in config.planning.required_runs:
-                result, _, _ = _solve(
-                    config,
-                    run,
-                    _default_model_path(config, run),
-                    args.overwrite,
+        if args.command == "vi":
+            if args.vi_command == "solve":
+                run = PlanningRun(args.reward_mode, args.gamma)
+                output = args.output or _default_model_path(config, run)
+                _solve(config, run, output, args.overwrite)
+                return 0
+            if args.vi_command == "required":
+                results = {}
+                for run in config.planning.required_runs:
+                    result, _, _ = _solve(
+                        config,
+                        run,
+                        _default_model_path(config, run),
+                        args.overwrite,
+                    )
+                    results[(run.reward_mode, run.gamma)] = result
+                invariant, disagreements = compare_policy_invariance(
+                    results[("sparse", 0.95)], results[("shaped", 0.95)]
                 )
-                results[(run.reward_mode, run.gamma)] = result
-            invariant, disagreements = compare_policy_invariance(
-                results[("sparse", 0.95)], results[("shaped", 0.95)]
-            )
-            print(
-                "Policy invariance after required runs: "
-                f"disagreements={int(disagreements.sum())}"
-            )
-            return 0 if invariant else 2
-        if args.vi_command == "inspect":
-            _inspect(args.model, args.config)
+                print(
+                    "Policy invariance after required runs: "
+                    f"disagreements={int(disagreements.sum())}"
+                )
+                return 0 if invariant else 2
+            if args.vi_command == "inspect":
+                _inspect(args.model, args.config)
+                return 0
+            return 0 if _verify_invariance(
+                args.config, args.sparse, args.shaped
+            ) else 2
+
+        if args.q_command == "inspect":
+            _inspect_q(args.model, args.config)
             return 0
-        return 0 if _verify_invariance(
-            args.config, args.sparse, args.shaped
-        ) else 2
+        if args.q_command == "train":
+            seed = config.base_seed if args.seed is None else args.seed
+            episodes = config.q_learning.episodes if args.episodes is None else args.episodes
+            decay_episodes = (
+                config.q_learning.decay_episodes
+                if args.decay_episodes is None
+                else args.decay_episodes
+            )
+            audit_episode = (
+                config.q_learning.audit_episode
+                if args.audit_episode is None
+                else args.audit_episode
+            )
+            run = QLearningRun(
+                args.reward_mode, args.schedule, seed, episodes
+            )
+            _train_q(
+                config,
+                run,
+                decay_episodes=decay_episodes,
+                audit_episode=audit_episode,
+                output_dir=args.output_dir,
+                overwrite=args.overwrite,
+            )
+            return 0
+
+        required_paths = []
+        for run in config.q_learning.required_runs:
+            _, _, _, identity = _q_components(
+                config,
+                run,
+                decay_episodes=config.q_learning.decay_episodes,
+                audit_episode=config.q_learning.audit_episode,
+            )
+            required_paths.append(_q_paths(config, run, identity))
+        for paths in required_paths:
+            preflight_q_learning_bundle(paths, overwrite=args.overwrite)
+        for run in config.q_learning.required_runs:
+            _train_q(
+                config,
+                run,
+                decay_episodes=config.q_learning.decay_episodes,
+                audit_episode=config.q_learning.audit_episode,
+                output_dir=None,
+                overwrite=args.overwrite,
+            )
+        return 0
     except (OSError, ValueError, FileExistsError, ValueIterationConvergenceError) as exc:
         parser.exit(1, f"error: {exc}\n")
 
