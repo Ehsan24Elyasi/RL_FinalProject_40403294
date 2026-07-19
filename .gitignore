@@ -13,3 +13,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated smoke, development, and verification runs
+results/pilots/

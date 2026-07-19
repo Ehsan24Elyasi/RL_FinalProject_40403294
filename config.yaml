@@ -50,3 +50,18 @@ q_learning:
       schedule: exponential
       seed: 9
       episodes: 5000
+sarsa_lambda:
+  gamma: 0.95
+  alpha: 0.1
+  episodes: 5000
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  decay_episodes: 4000
+  diagnostic_episode: 1
+  model_dir: results/models/sarsa_lambda
+  raw_dir: results/raw/sarsa_lambda
+  required_runs:
+    - {lambda: 0.0, reward_mode: shaped, schedule: linear, seed: 9, episodes: 5000}
+    - {lambda: 0.3, reward_mode: shaped, schedule: linear, seed: 9, episodes: 5000}
+    - {lambda: 0.7, reward_mode: shaped, schedule: linear, seed: 9, episodes: 5000}
+    - {lambda: 0.9, reward_mode: shaped, schedule: linear, seed: 9, episodes: 5000}

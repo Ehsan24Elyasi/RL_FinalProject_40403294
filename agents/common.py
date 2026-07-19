@@ -20,6 +20,8 @@ FORMAT_VERSION = 1
 ALGORITHM_NAME = "value_iteration"
 Q_LEARNING_FORMAT_VERSION = 1
 Q_LEARNING_ALGORITHM_NAME = "q_learning"
+SARSA_LAMBDA_FORMAT_VERSION = 1
+SARSA_LAMBDA_ALGORITHM_NAME = "sarsa_lambda"
 STATE_LAYOUT = "key,row,col; action last"
 
 
@@ -525,3 +527,115 @@ def load_q_learning_npz(
 
     return LoadedQLearning(q_values, state_visits, state_action_visits, valid,
                            reachable, terminal, metadata)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedSarsaLambda:
+    q_values: np.ndarray
+    state_visit_counts: np.ndarray
+    state_action_visit_counts: np.ndarray
+    valid_state_mask: np.ndarray
+    reachable_state_mask: np.ndarray
+    terminal_state_mask: np.ndarray
+    metadata: Mapping[str, Any]
+
+
+def save_sarsa_lambda_npz(path: Path | str, *, q_values: np.ndarray,
+                          state_visit_counts: np.ndarray,
+                          state_action_visit_counts: np.ndarray,
+                          valid_mask: np.ndarray, reachable_mask: np.ndarray,
+                          terminal_mask: np.ndarray, metadata: Mapping[str, Any],
+                          overwrite: bool = False) -> Path:
+    destination = Path(path)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing model: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "q_values": np.asarray(q_values, dtype=np.float64),
+        "state_visit_counts": np.asarray(state_visit_counts, dtype=np.int64),
+        "state_action_visit_counts": np.asarray(state_action_visit_counts, dtype=np.int64),
+        "valid_state_mask": np.asarray(valid_mask, dtype=np.bool_),
+        "reachable_state_mask": np.asarray(reachable_mask, dtype=np.bool_),
+        "terminal_state_mask": np.asarray(terminal_mask, dtype=np.bool_),
+        "format_version": np.asarray(SARSA_LAMBDA_FORMAT_VERSION, dtype=np.int64),
+        "algorithm": np.asarray(SARSA_LAMBDA_ALGORITHM_NAME),
+        "action_names": np.asarray(ACTION_NAMES), "state_layout": np.asarray(STATE_LAYOUT),
+    }
+    for key, value in metadata.items():
+        if key in payload:
+            raise ValueError(f"metadata key conflicts with reserved NPZ field: {key}")
+        payload[key] = np.asarray(value)
+    np.savez_compressed(destination, **payload)
+    return destination
+
+
+def load_sarsa_lambda_npz(path: Path | str, *, expected_spec: MazeSpec | None = None
+                          ) -> LoadedSarsaLambda:
+    source = Path(path)
+    try:
+        with np.load(source, allow_pickle=False) as archive:
+            data = {key: archive[key] for key in archive.files}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Could not load SARSA(lambda) model {source}: {exc}") from exc
+    required = {"q_values", "state_visit_counts", "state_action_visit_counts",
+                "valid_state_mask", "reachable_state_mask", "terminal_state_mask",
+                "action_names"}
+    if required - data.keys():
+        raise ValueError(f"NPZ is missing required fields: {sorted(required - data.keys())}")
+    if int(_scalar(data, "format_version")) != SARSA_LAMBDA_FORMAT_VERSION:
+        raise ValueError("Unsupported SARSA(lambda) NPZ format version")
+    if str(_scalar(data, "algorithm")) != SARSA_LAMBDA_ALGORITHM_NAME:
+        raise ValueError("SARSA(lambda) NPZ algorithm mismatch")
+    if tuple(map(str, data["action_names"].tolist())) != ACTION_NAMES or str(_scalar(data, "state_layout")) != STATE_LAYOUT:
+        raise ValueError("SARSA(lambda) action/layout mismatch")
+    q = data["q_values"]; sv = data["state_visit_counts"]; sav = data["state_action_visit_counts"]
+    valid = data["valid_state_mask"]; reachable = data["reachable_state_mask"]; terminal = data["terminal_state_mask"]
+    if q.dtype != np.float64 or sv.dtype != np.int64 or sav.dtype != np.int64:
+        raise ValueError("SARSA(lambda) array dtype mismatch")
+    if any(x.dtype != np.bool_ for x in (valid, reachable, terminal)):
+        raise ValueError("SARSA(lambda) masks must use bool dtype")
+    if q.ndim != 4 or q.shape[0] != 2 or q.shape[-1] != len(ACTION_ORDER):
+        raise ValueError("SARSA(lambda) Q shape mismatch")
+    shape = q.shape[:-1]
+    if any(x.shape != shape for x in (sv, valid, reachable, terminal)) or sav.shape != q.shape:
+        raise ValueError("SARSA(lambda) array shape mismatch")
+    valid_q = np.broadcast_to(valid[..., None], q.shape)
+    if not np.all(np.isfinite(q[valid_q])) or not np.all(np.isnan(q[~valid_q])):
+        raise ValueError("SARSA(lambda) Q finite/NaN placement invalid")
+    if np.any(sv < 0) or np.any(sav < 0) or np.any(reachable & ~valid) or np.any(terminal & ~valid):
+        raise ValueError("SARSA(lambda) masks/counts invalid")
+    if np.any(sv[~reachable]) or np.any(sav[np.broadcast_to((~reachable)[..., None], q.shape)]):
+        raise ValueError("SARSA(lambda) counts outside reachable states")
+    if not np.all(q[terminal] == 0) or np.any(sav[terminal]):
+        raise ValueError("SARSA(lambda) terminal invariants invalid")
+    scalar_keys = ("run_id","semantic_config_hash","run_config_json","student_id","base_seed",
+        "map_checksum","rows","cols","max_steps","gamma","alpha","lambda","episodes",
+        "epsilon_start","epsilon_end","decay_episodes","schedule","reward_mode","diagnostic_episode",
+        "root_seed","behavior_seed","transition_seed","seed_derivation","trace_type",
+        "trace_update_order","trace_reset","truncation_semantics","shaping_method","shaping_version",
+        "shaping_scale","behavior_policy","q_initialization","action_order_json","runtime_seconds",
+        "total_steps","total_successes","total_terminated","total_truncated","state_visit_total")
+    metadata = {key: _scalar(data, key) for key in scalar_keys}
+    text = str(metadata["run_config_json"])
+    try: resolved = json.loads(text)
+    except json.JSONDecodeError as exc: raise ValueError("SARSA run JSON invalid") from exc
+    canonical = _canonical_json(resolved); digest = hashlib.sha256(canonical.encode()).hexdigest()
+    if canonical != text or str(metadata["semantic_config_hash"]) != digest or str(metadata["run_id"]) != f"sarsa-lambda-{digest}":
+        raise ValueError("SARSA run identity invalid")
+    if resolved.get("algorithm") != "manual_on_policy_sarsa_lambda":
+        raise ValueError("SARSA semantic algorithm mismatch")
+    if str(metadata["trace_type"]) != "replacing" or not 0 <= float(metadata["lambda"]) <= 1:
+        raise ValueError("SARSA trace semantics invalid")
+    episodes = int(metadata["episodes"]); total_steps = int(metadata["total_steps"])
+    if total_steps != int(sav.sum()) or int(metadata["state_visit_total"]) != int(sv.sum()) or int(sv.sum()) != total_steps + episodes:
+        raise ValueError("SARSA count totals invalid")
+    if int(metadata["total_terminated"]) + int(metadata["total_truncated"]) != episodes:
+        raise ValueError("SARSA episode totals invalid")
+    if int(sv[terminal].sum()) != int(metadata["total_terminated"]):
+        raise ValueError("SARSA terminal visits invalid")
+    if expected_spec is not None:
+        if shape != (2, expected_spec.rows, expected_spec.cols) or str(metadata["map_checksum"]) != map_checksum(expected_spec):
+            raise ValueError("SARSA model map mismatch")
+        if not np.array_equal(valid, valid_state_mask(expected_spec)) or not np.array_equal(terminal, terminal_state_mask(expected_spec)) or not np.array_equal(reachable, reachable_state_mask(MazeMDP(expected_spec))):
+            raise ValueError("SARSA model masks do not match map")
+    return LoadedSarsaLambda(q, sv, sav, valid, reachable, terminal, metadata)

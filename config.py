@@ -82,6 +82,46 @@ class QLearningSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class SarsaLambdaRun:
+    trace_lambda: float
+    reward_mode: str
+    schedule: str
+    seed: int
+    episodes: int = 5_000
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.trace_lambda <= 1.0:
+            raise ValueError("SARSA lambda must be in [0, 1]")
+        if self.reward_mode not in {"sparse", "shaped"} or self.schedule not in {"linear", "exponential"}:
+            raise ValueError("invalid SARSA reward mode or schedule")
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("SARSA seed must be a nonnegative integer")
+        if isinstance(self.episodes, bool) or not isinstance(self.episodes, int) or self.episodes <= 0:
+            raise ValueError("SARSA episodes must be positive")
+
+    @property
+    def artifact_stem(self) -> str:
+        lam = f"{self.trace_lambda:.1f}".replace(".", "p")
+        return f"sarsa_lambda_{lam}_{self.reward_mode}_{self.schedule}_seed_{self.seed}_ep_{self.episodes}"
+
+
+@dataclass(frozen=True, slots=True)
+class SarsaLambdaSettings:
+    gamma: float
+    alpha: float
+    episodes: int
+    shaping_method: str
+    shaping_version: int
+    epsilon_start: float
+    epsilon_end: float
+    decay_episodes: int
+    diagnostic_episode: int
+    model_dir: Path
+    raw_dir: Path
+    required_runs: tuple[SarsaLambdaRun, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OperationalConfig:
     path: Path
     student_id: str
@@ -91,6 +131,7 @@ class OperationalConfig:
     rewards: RewardSpec
     planning: PlanningConfig
     q_learning: QLearningSettings
+    sarsa_lambda: SarsaLambdaSettings
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -134,6 +175,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
     shaping = _mapping(root.get("shaping"), "shaping")
     planning_raw = _mapping(root.get("planning"), "planning")
     q_raw = _mapping(root.get("q_learning"), "q_learning")
+    sarsa_raw = _mapping(root.get("sarsa_lambda"), "sarsa_lambda")
 
     intended = _finite_float(maze.get("intended_probability"), "maze.intended_probability")
     slip = _finite_float(
@@ -267,11 +309,36 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
             "q_learning.required_runs must be shaped linear/exponential, seed 9, 5000 episodes"
         )
 
+    s_gamma = _finite_float(sarsa_raw.get("gamma"), "sarsa_lambda.gamma")
+    s_alpha = _finite_float(sarsa_raw.get("alpha"), "sarsa_lambda.alpha")
+    s_episodes = _strict_int(sarsa_raw.get("episodes"), "sarsa_lambda.episodes", minimum=1)
+    s_decay = _strict_int(sarsa_raw.get("decay_episodes"), "sarsa_lambda.decay_episodes", minimum=2)
+    s_diag = _strict_int(sarsa_raw.get("diagnostic_episode"), "sarsa_lambda.diagnostic_episode", minimum=1)
+    s_eps_start = _finite_float(sarsa_raw.get("epsilon_start"), "sarsa_lambda.epsilon_start")
+    s_eps_end = _finite_float(sarsa_raw.get("epsilon_end"), "sarsa_lambda.epsilon_end")
+    if not 0 <= s_gamma < 1 or not 0 < s_alpha <= 1 or not 0 <= s_eps_end <= s_eps_start <= 1 or not 1 <= s_diag <= s_episodes:
+        raise ValueError("invalid sarsa_lambda primary settings")
+    s_runs_raw = sarsa_raw.get("required_runs")
+    if not isinstance(s_runs_raw, list):
+        raise ValueError("sarsa_lambda.required_runs must be a list")
+    s_runs = tuple(SarsaLambdaRun(
+        _finite_float(_mapping(item, "SARSA run").get("lambda"), "SARSA run lambda"),
+        str(_mapping(item, "SARSA run").get("reward_mode")),
+        str(_mapping(item, "SARSA run").get("schedule")),
+        _strict_int(_mapping(item, "SARSA run").get("seed"), "SARSA run seed", minimum=0),
+        _strict_int(_mapping(item, "SARSA run").get("episodes", s_episodes), "SARSA run episodes", minimum=1),
+    ) for item in s_runs_raw)
+    expected_s = tuple(SarsaLambdaRun(value, "shaped", "linear", 9, 5000) for value in (0.0, 0.3, 0.7, 0.9))
+    if s_runs != expected_s:
+        raise ValueError("sarsa_lambda.required_runs must use lambdas 0, .3, .7, .9 in order")
+
     base = config_path.parent
     source_map = Path(str(maze.get("source_map")))
     output_dir = Path(str(planning_raw.get("output_dir")))
     q_model_dir = Path(str(q_raw.get("model_dir")))
     q_raw_dir = Path(str(q_raw.get("raw_dir")))
+    s_model_dir = Path(str(sarsa_raw.get("model_dir")))
+    s_raw_dir = Path(str(sarsa_raw.get("raw_dir")))
     if not source_map.is_absolute():
         source_map = (base / source_map).resolve()
     if not output_dir.is_absolute():
@@ -280,6 +347,10 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
         q_model_dir = (base / q_model_dir).resolve()
     if not q_raw_dir.is_absolute():
         q_raw_dir = (base / q_raw_dir).resolve()
+    if not s_model_dir.is_absolute():
+        s_model_dir = (base / s_model_dir).resolve()
+    if not s_raw_dir.is_absolute():
+        s_raw_dir = (base / s_raw_dir).resolve()
 
     student_id = str(project.get("student_id", "")).strip()
     if not student_id:
@@ -316,5 +387,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> OperationalConfig:
             model_dir=q_model_dir,
             raw_dir=q_raw_dir,
             required_runs=q_runs,
+        ),
+        sarsa_lambda=SarsaLambdaSettings(
+            gamma=s_gamma, alpha=s_alpha, episodes=s_episodes,
+            shaping_method=shaping_method, shaping_version=shaping_version,
+            epsilon_start=s_eps_start, epsilon_end=s_eps_end,
+            decay_episodes=s_decay, diagnostic_episode=s_diag,
+            model_dir=s_model_dir, raw_dir=s_raw_dir, required_runs=s_runs,
         ),
     )

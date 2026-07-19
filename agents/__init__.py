@@ -17,6 +17,12 @@ from .q_learning import (
     select_epsilon_greedy,
     train_q_learning,
 )
+from .sarsa_lambda import (
+    SarsaLambdaBundlePaths, SarsaLambdaConfig, SarsaLambdaResult,
+    SarsaLambdaRunIdentity, SarsaLambdaSeeds, TraceDiagnosticRow, TraceUpdate,
+    apply_sarsa_lambda_update, build_sarsa_lambda_run_identity,
+    derive_sarsa_lambda_seeds, train_sarsa_lambda,
+)
 from .value_iteration import (
     ValueIterationConfig,
     ValueIterationConvergenceError,
@@ -43,6 +49,17 @@ __all__ = [
     "epsilon_for_episode",
     "select_epsilon_greedy",
     "train_q_learning",
+    "SarsaLambdaBundlePaths",
+    "SarsaLambdaConfig",
+    "SarsaLambdaResult",
+    "SarsaLambdaRunIdentity",
+    "SarsaLambdaSeeds",
+    "TraceDiagnosticRow",
+    "TraceUpdate",
+    "apply_sarsa_lambda_update",
+    "build_sarsa_lambda_run_identity",
+    "derive_sarsa_lambda_seeds",
+    "train_sarsa_lambda",
     "ValueIterationConfig",
     "ValueIterationConvergenceError",
     "ValueIterationResult",

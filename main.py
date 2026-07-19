@@ -18,6 +18,11 @@ from agents.q_learning import (
     train_q_learning,
     validate_q_learning_bundle,
 )
+from agents.sarsa_lambda import (
+    SarsaLambdaBundlePaths, SarsaLambdaConfig, build_sarsa_lambda_run_identity,
+    derive_sarsa_lambda_seeds, preflight_sarsa_lambda_bundle,
+    save_sarsa_lambda_bundle, train_sarsa_lambda, validate_sarsa_lambda_bundle,
+)
 from agents.value_iteration import (
     ValueIterationConfig,
     ValueIterationConvergenceError,
@@ -29,6 +34,7 @@ from config import (
     OperationalConfig,
     PlanningRun,
     QLearningRun,
+    SarsaLambdaRun,
     load_config,
 )
 from environments.generator import (
@@ -124,6 +130,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     q_inspect.add_argument("model", type=Path)
     q_inspect.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+
+    sarsa = subparsers.add_parser("sarsa", help="SARSA(lambda) operations")
+    ss = sarsa.add_subparsers(dest="sarsa_command", required=True)
+    st = ss.add_parser("train", help="train one SARSA(lambda) run")
+    st.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    st.add_argument("--lambda", dest="trace_lambda", type=float, required=True)
+    st.add_argument("--reward-mode", choices=("sparse","shaped"), required=True)
+    st.add_argument("--schedule", choices=("linear","exponential"), default="linear")
+    st.add_argument("--seed", type=int); st.add_argument("--episodes", type=_positive_int)
+    st.add_argument("--decay-episodes", type=_positive_int); st.add_argument("--diagnostic-episode", type=_positive_int)
+    st.add_argument("--output-dir", type=Path); st.add_argument("--overwrite", action="store_true")
+    sr = ss.add_parser("required", help="run four configured base-seed lambda runs")
+    sr.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH); sr.add_argument("--overwrite", action="store_true")
+    si = ss.add_parser("inspect", help="validate and summarize a SARSA(lambda) model")
+    si.add_argument("model", type=Path); si.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     return parser
 
 
@@ -378,6 +399,50 @@ def _inspect_q(model: Path, config_path: Path) -> None:
     print(f"Manifest: {paths.manifest}")
 
 
+def _sarsa_components(config, run, decay_episodes, diagnostic_episode):
+    spec = _validate_config_map(config)
+    mdp = MazeMDP(spec, config.rewards, gamma=config.sarsa_lambda.gamma,
+                  use_shaping=run.reward_mode == "shaped")
+    cfg = SarsaLambdaConfig(gamma=config.sarsa_lambda.gamma, alpha=config.sarsa_lambda.alpha,
+        trace_lambda=run.trace_lambda, episodes=run.episodes,
+        epsilon_start=config.sarsa_lambda.epsilon_start, epsilon_end=config.sarsa_lambda.epsilon_end,
+        decay_episodes=decay_episodes, schedule=run.schedule, reward_mode=run.reward_mode,
+        diagnostic_episode=diagnostic_episode, shaping_method=config.sarsa_lambda.shaping_method,
+        shaping_version=config.sarsa_lambda.shaping_version)
+    seeds=derive_sarsa_lambda_seeds(run.seed); identity=build_sarsa_lambda_run_identity(mdp,cfg,seeds)
+    return spec,mdp,cfg,identity
+
+
+def _sarsa_paths(config,run,identity,output_dir=None):
+    model_dir=config.sarsa_lambda.model_dir if output_dir is None else output_dir/"models"
+    raw_dir=config.sarsa_lambda.raw_dir if output_dir is None else output_dir/"raw"
+    stem=f"{run.artifact_stem}_rid_{identity.short_id}"
+    return SarsaLambdaBundlePaths(model_dir/f"{stem}.npz",raw_dir/f"{stem}_episodes.csv",
+                                  raw_dir/f"{stem}_diagnostic.csv",raw_dir/f"{stem}_manifest.json")
+
+
+def _train_sarsa(config,run,decay,diagnostic,output_dir,overwrite):
+    spec,mdp,cfg,identity=_sarsa_components(config,run,decay,diagnostic); paths=_sarsa_paths(config,run,identity,output_dir)
+    preflight_sarsa_lambda_bundle(paths,overwrite=overwrite)
+    result=train_sarsa_lambda(mdp,cfg,root_seed=run.seed,identity=identity)
+    save_sarsa_lambda_bundle(paths,result,expected_spec=spec,overwrite=overwrite)
+    print(f"Trained SARSA(lambda={run.trace_lambda:g}) {run.reward_mode} {run.schedule} seed={run.seed}: episodes={run.episodes}, successes={sum(x.success for x in result.episode_metrics)}, steps={sum(x.steps for x in result.episode_metrics)}, runtime={result.runtime_seconds:.3f}s")
+    print(f"Run ID: {identity.run_id}"); print(f"Model: {paths.model}"); print(f"Diagnostic: {paths.diagnostic} ({len(result.diagnostic_rows)} rows)")
+    return result,paths
+
+
+def _inspect_sarsa(model,config_path):
+    config=load_config(config_path); spec=_validate_config_map(config); candidates=[config.sarsa_lambda.raw_dir,model.parent.parent/"raw"]
+    manifests=[p for d in candidates for p in d.glob(model.stem+"_manifest.json")]
+    if len(set(map(Path.resolve,manifests))) != 1: raise ValueError("could not uniquely locate SARSA manifest")
+    loaded,manifest,paths=validate_sarsa_lambda_bundle(manifests[0],expected_spec=spec,expected_model=model); m=loaded.metadata
+    visited=int((loaded.state_visit_counts>0)[loaded.reachable_state_mask].sum()); reachable=int(loaded.reachable_state_mask.sum())
+    print(f"SARSA(lambda) model: {paths.model}"); print(f"Run ID={m['run_id']}; complete={manifest['complete']}")
+    print(f"lambda={float(m['lambda']):g}; trace={m['trace_type']}; reset={m['trace_reset']}; truncation={m['truncation_semantics']}")
+    print(f"episodes={int(m['episodes'])}; steps={int(m['total_steps'])}; successes={int(m['total_successes'])}; truncations={int(m['total_truncated'])}")
+    print(f"coverage={visited}/{reachable} ({visited/reachable:.1%}); checksum={m['map_checksum']}"); print(f"Diagnostic: {paths.diagnostic}")
+
+
 def _verify_invariance(config_path: Path, sparse_path: Path | None, shaped_path: Path | None) -> bool:
     config = load_config(config_path)
     spec = _validate_config_map(config)
@@ -467,6 +532,23 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if _verify_invariance(
                 args.config, args.sparse, args.shaped
             ) else 2
+
+        if args.command == "sarsa":
+            if args.sarsa_command == "inspect":
+                _inspect_sarsa(args.model,args.config); return 0
+            if args.sarsa_command == "train":
+                seed=config.base_seed if args.seed is None else args.seed
+                episodes=config.sarsa_lambda.episodes if args.episodes is None else args.episodes
+                decay=config.sarsa_lambda.decay_episodes if args.decay_episodes is None else args.decay_episodes
+                diagnostic=config.sarsa_lambda.diagnostic_episode if args.diagnostic_episode is None else args.diagnostic_episode
+                run=SarsaLambdaRun(args.trace_lambda,args.reward_mode,args.schedule,seed,episodes)
+                _train_sarsa(config,run,decay,diagnostic,args.output_dir,args.overwrite); return 0
+            prepared=[]
+            for run in config.sarsa_lambda.required_runs:
+                _,_,_,identity=_sarsa_components(config,run,config.sarsa_lambda.decay_episodes,config.sarsa_lambda.diagnostic_episode)
+                paths=_sarsa_paths(config,run,identity); preflight_sarsa_lambda_bundle(paths,overwrite=args.overwrite); prepared.append((run,paths))
+            for run,_ in prepared: _train_sarsa(config,run,config.sarsa_lambda.decay_episodes,config.sarsa_lambda.diagnostic_episode,None,args.overwrite)
+            return 0
 
         if args.q_command == "inspect":
             _inspect_q(args.model, args.config)
