@@ -1,0 +1,73 @@
+schema_version: 1
+preset:
+  name: final-sarsa
+  kind: final
+  description: Locked final source-map SARSA(lambda) matrix across five fixed seeds.
+  project_config: ../../config.yaml
+  output_subdir: final-sarsa
+execution:
+  require_confirmation: true
+  confirmation_flag: --confirm-final
+  sequential: true
+  resume: true
+seeds:
+  roots: [9, 109, 209, 309, 409]
+  stream_derivation: numpy-seedsequence-spawn-v1
+  stream_order:
+    - training_action_choice
+    - training_transitions
+    - evaluation_tie_breaking
+    - evaluation_transitions
+    - statistics
+evaluation:
+  policy: greedy_exact_max_uniform_ties
+  common_rollout_group: source-final-v1
+  rollouts: 100
+  max_steps: inherit
+  preserve_arrays: true
+  record_trajectories: []
+audits:
+  event_coverage: true
+  q_step_audits: []
+  sarsa_trace_diagnostics: []
+matrix:
+  value_iteration:
+    defaults: {}
+    variants: []
+  q_learning:
+    defaults: {}
+    variants: []
+  sarsa_lambda:
+    defaults:
+      map: source
+      reward_mode: shaped
+      schedule: linear
+      gamma: 0.95
+      alpha: 0.1
+      episodes: 5000
+      epsilon_start: 1.0
+      epsilon_end: 0.05
+      decay_episodes: 4000
+      diagnostic_episode: null
+      write_active_traces: false
+    variants:
+      - {slot: sarsa-shaped-linear-lambda-0.0, lambda: 0.0}
+      - {slot: sarsa-shaped-linear-lambda-0.3, lambda: 0.3}
+      - {slot: sarsa-shaped-linear-lambda-0.7, lambda: 0.7}
+      - {slot: sarsa-shaped-linear-lambda-0.9, lambda: 0.9}
+  transfer_q_learning:
+    defaults: {}
+    target_roles: []
+    initializations: []
+expected_counts:
+  vi_solves: 0
+  q_runs: 0
+  sarsa_runs: 20
+  transfer_slots: 0
+  ready_slots: 20
+  unavailable_slots: 0
+  total_slots: 20
+confirmation_metadata:
+  final_preset: true
+  required_cli_flag: --confirm-final
+  approved_matrix: phase-9-locked-final

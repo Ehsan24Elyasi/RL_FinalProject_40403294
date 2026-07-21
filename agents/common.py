@@ -456,7 +456,7 @@ def load_q_learning_npz(
             "episodes": learning["episodes"], "epsilon_start": learning["epsilon_start"],
             "epsilon_end": learning["epsilon_end"], "decay_episodes": learning["decay_episodes"],
             "schedule": learning["schedule"], "reward_mode": learning["reward_mode"],
-            "audit_episode": learning["audit_episode"], "root_seed": seeds["root"],
+            "audit_episode": (-1 if learning["audit_episode"] is None else learning["audit_episode"]), "root_seed": seeds["root"],
             "behavior_seed": seeds["behavior"], "transition_seed": seeds["transition"],
             "seed_derivation": seeds["derivation"],
             "behavior_policy": resolved["behavior_policy"]["identifier"],
@@ -478,7 +478,7 @@ def load_q_learning_npz(
         raise ValueError("NPZ learning-rate metadata is invalid")
     episodes, decay_episodes = int(metadata["episodes"]), int(metadata["decay_episodes"])
     audit_episode = int(metadata["audit_episode"])
-    if episodes <= 0 or decay_episodes < 2 or not 1 <= audit_episode <= episodes:
+    if episodes <= 0 or decay_episodes < 2 or (audit_episode != -1 and not 1 <= audit_episode <= episodes):
         raise ValueError("NPZ episode metadata is invalid")
     epsilon_start, epsilon_end = float(metadata["epsilon_start"]), float(metadata["epsilon_end"])
     if not 0.0 <= epsilon_end <= epsilon_start <= 1.0:

@@ -1,0 +1,118 @@
+schema_version: 1
+preset:
+  name: final-all
+  kind: final
+  description: Explicit union of the locked final VI and 75 model-free slots.
+  project_config: ../../config.yaml
+  output_subdir: final-all
+execution:
+  require_confirmation: true
+  confirmation_flag: --confirm-final
+  sequential: true
+  resume: true
+seeds:
+  roots: [9, 109, 209, 309, 409]
+  stream_derivation: numpy-seedsequence-spawn-v1
+  stream_order:
+    - training_action_choice
+    - training_transitions
+    - evaluation_tie_breaking
+    - evaluation_transitions
+    - statistics
+evaluation:
+  policy: greedy_exact_max_uniform_ties
+  common_rollout_group: locked-final-v1
+  rollouts: 100
+  max_steps: inherit
+  preserve_arrays: true
+  record_trajectories: []
+  transfer_checkpoints:
+    initial_rollouts: 100
+    final_rollouts: 100
+    interval_episodes: 250
+    checkpoint_rollouts: 20
+    include_initial: true
+    include_final: true
+audits:
+  event_coverage: true
+  q_step_audits: []
+  sarsa_trace_diagnostics: []
+matrix:
+  value_iteration:
+    defaults:
+      map: source
+      theta: inherit
+      max_sweeps: inherit
+      tie_tolerance: inherit
+    variants:
+      - {slot: vi-shaped-gamma-0.90, reward_mode: shaped, gamma: 0.90}
+      - {slot: vi-shaped-gamma-0.95, reward_mode: shaped, gamma: 0.95}
+      - {slot: vi-shaped-gamma-0.99, reward_mode: shaped, gamma: 0.99}
+      - {slot: vi-sparse-gamma-0.95, reward_mode: sparse, gamma: 0.95}
+  q_learning:
+    defaults:
+      map: source
+      gamma: 0.95
+      alpha: 0.1
+      episodes: 5000
+      epsilon_start: 1.0
+      epsilon_end: 0.05
+      decay_episodes: 4000
+      audit_episode: null
+    variants:
+      - {slot: q-shaped-linear, reward_mode: shaped, schedule: linear}
+      - {slot: q-shaped-exponential, reward_mode: shaped, schedule: exponential}
+      - {slot: q-sparse-linear, reward_mode: sparse, schedule: linear}
+  sarsa_lambda:
+    defaults:
+      map: source
+      reward_mode: shaped
+      schedule: linear
+      gamma: 0.95
+      alpha: 0.1
+      episodes: 5000
+      epsilon_start: 1.0
+      epsilon_end: 0.05
+      decay_episodes: 4000
+      diagnostic_episode: null
+      write_active_traces: false
+    variants:
+      - {slot: sarsa-shaped-linear-lambda-0.0, lambda: 0.0}
+      - {slot: sarsa-shaped-linear-lambda-0.3, lambda: 0.3}
+      - {slot: sarsa-shaped-linear-lambda-0.7, lambda: 0.7}
+      - {slot: sarsa-shaped-linear-lambda-0.9, lambda: 0.9}
+  transfer_q_learning:
+    defaults:
+      source_map: source
+      episodes: 3000
+      reward_mode: shaped
+      gamma: 0.95
+      alpha: 0.1
+      schedule: linear
+      epsilon_start: 1.0
+      epsilon_end: 0.05
+      decay_episodes: 2400
+      audit_episode: null
+      status: unavailable
+      unavailable_reason: Phase 6 target maps and transfer initialization are not implemented or frozen.
+    target_roles:
+      - {role: similar, map: ../../environments/maps/target_similar.json}
+      - {role: different, map: ../../environments/maps/target_different.json}
+    initializations:
+      - {name: scratch}
+      - {name: full}
+      - {name: scaled, beta: 0.5}
+      - {name: selective, signature: phase-aware-3x3-with-teleporter-partner}
+expected_counts:
+  vi_solves: 4
+  q_runs: 15
+  sarsa_runs: 20
+  transfer_slots: 40
+  ready_slots: 39
+  unavailable_slots: 40
+  total_slots: 79
+  model_free_slots: 75
+confirmation_metadata:
+  final_preset: true
+  required_cli_flag: --confirm-final
+  approved_matrix: phase-9-locked-final

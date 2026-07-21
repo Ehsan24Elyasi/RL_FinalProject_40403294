@@ -1,0 +1,66 @@
+schema_version: 1
+preset:
+  name: final-vi
+  kind: final
+  description: Locked final source-map Value Iteration matrix.
+  project_config: ../../config.yaml
+  output_subdir: final-vi
+execution:
+  require_confirmation: true
+  confirmation_flag: --confirm-final
+  sequential: true
+  resume: true
+seeds:
+  roots: []
+  stream_derivation: numpy-seedsequence-spawn-v1
+  stream_order:
+    - training_action_choice
+    - training_transitions
+    - evaluation_tie_breaking
+    - evaluation_transitions
+    - statistics
+evaluation:
+  policy: greedy_exact_max_uniform_ties
+  common_rollout_group: source-final-v1
+  rollouts: 100
+  max_steps: inherit
+  preserve_arrays: true
+  record_trajectories: []
+audits:
+  event_coverage: true
+  q_step_audits: []
+  sarsa_trace_diagnostics: []
+matrix:
+  value_iteration:
+    defaults:
+      map: source
+      theta: inherit
+      max_sweeps: inherit
+      tie_tolerance: inherit
+    variants:
+      - {slot: vi-shaped-gamma-0.90, reward_mode: shaped, gamma: 0.90}
+      - {slot: vi-shaped-gamma-0.95, reward_mode: shaped, gamma: 0.95}
+      - {slot: vi-shaped-gamma-0.99, reward_mode: shaped, gamma: 0.99}
+      - {slot: vi-sparse-gamma-0.95, reward_mode: sparse, gamma: 0.95}
+  q_learning:
+    defaults: {}
+    variants: []
+  sarsa_lambda:
+    defaults: {}
+    variants: []
+  transfer_q_learning:
+    defaults: {}
+    target_roles: []
+    initializations: []
+expected_counts:
+  vi_solves: 4
+  q_runs: 0
+  sarsa_runs: 0
+  transfer_slots: 0
+  ready_slots: 4
+  unavailable_slots: 0
+  total_slots: 4
+confirmation_metadata:
+  final_preset: true
+  required_cli_flag: --confirm-final
+  approved_matrix: phase-9-locked-final

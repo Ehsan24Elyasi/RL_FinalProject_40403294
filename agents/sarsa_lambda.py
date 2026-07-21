@@ -43,7 +43,7 @@ class SarsaLambdaConfig:
     decay_episodes: int = 4000
     schedule: str = "linear"
     reward_mode: str = "shaped"
-    diagnostic_episode: int = 1
+    diagnostic_episode: int | None = 1
     shaping_method: str = SUPPORTED_SHAPING_METHOD
     shaping_version: int = SHAPING_VERSION
     def __post_init__(self):
@@ -55,16 +55,17 @@ class SarsaLambdaConfig:
         if isinstance(self.decay_episodes, bool) or not isinstance(self.decay_episodes, int) or self.decay_episodes < 2: raise ValueError("decay_episodes must be at least 2")
         if self.schedule not in {"linear", "exponential", "geometric"}: raise ValueError("unsupported schedule")
         if self.reward_mode not in {"sparse", "shaped"}: raise ValueError("unsupported reward mode")
-        if not 1 <= self.diagnostic_episode <= self.episodes: raise ValueError("diagnostic_episode must be within episodes")
+        if self.diagnostic_episode is not None and (isinstance(self.diagnostic_episode, bool) or not isinstance(self.diagnostic_episode, int) or not 1 <= self.diagnostic_episode <= self.episodes): raise ValueError("diagnostic_episode must be None or within episodes")
         if self.schedule != "linear" and self.epsilon_end == 0: raise ValueError("exponential epsilon_end must be positive")
         if self.shaping_method != SUPPORTED_SHAPING_METHOD or self.shaping_version != SHAPING_VERSION: raise ValueError("unsupported shaping semantics")
 
 @dataclass(frozen=True, slots=True)
 class SarsaLambdaSeeds:
-    root: int; behavior: int; transition: int
+    root: int; behavior: int; transition: int; derivation: str = SEED_DERIVATION
     def __post_init__(self):
         if any(isinstance(x, bool) or not isinstance(x, int) or x < 0 for x in (self.root,self.behavior,self.transition)): raise ValueError("seeds must be nonnegative integers")
         if self.behavior == self.transition: raise ValueError("seed streams must be independent")
+        if not isinstance(self.derivation, str) or not self.derivation: raise ValueError("seed derivation must be nonempty")
 
 @dataclass(frozen=True, slots=True)
 class SarsaLambdaRunIdentity:
@@ -122,7 +123,7 @@ class SarsaLambdaResult:
         r=json.loads(self.identity.config_json); l=r["learning"]; s=r["seeds"]
         return {"run_id":self.identity.run_id,"semantic_config_hash":self.identity.semantic_config_hash,"run_config_json":self.identity.config_json,
           "student_id":r["student"]["student_id"],"base_seed":r["student"]["base_seed"],"map_checksum":r["map"]["checksum"],"rows":r["map"]["rows"],"cols":r["map"]["cols"],"max_steps":r["map"]["max_steps"],
-          "gamma":l["gamma"],"alpha":l["alpha"],"lambda":l["lambda"],"episodes":l["episodes"],"epsilon_start":l["epsilon_start"],"epsilon_end":l["epsilon_end"],"decay_episodes":l["decay_episodes"],"schedule":l["schedule"],"reward_mode":l["reward_mode"],"diagnostic_episode":l["diagnostic_episode"],
+          "gamma":l["gamma"],"alpha":l["alpha"],"lambda":l["lambda"],"episodes":l["episodes"],"epsilon_start":l["epsilon_start"],"epsilon_end":l["epsilon_end"],"decay_episodes":l["decay_episodes"],"schedule":l["schedule"],"reward_mode":l["reward_mode"],"diagnostic_episode":(-1 if l["diagnostic_episode"] is None else l["diagnostic_episode"]),
           "root_seed":s["root"],"behavior_seed":s["behavior"],"transition_seed":s["transition"],"seed_derivation":s["derivation"],"trace_type":TRACE_TYPE,"trace_update_order":TRACE_UPDATE_ORDER,"trace_reset":TRACE_RESET,"truncation_semantics":TRUNCATION_SEMANTICS,
           "shaping_method":r["shaping"]["method"],"shaping_version":r["shaping"]["version"],"shaping_scale":r["shaping"]["scale"],"behavior_policy":BEHAVIOR_POLICY,"q_initialization":Q_INITIALIZATION,"action_order_json":_canonical_json(r["actions"]["order"]),
           "runtime_seconds":self.runtime_seconds,"total_steps":sum(x.steps for x in self.episode_metrics),"total_successes":sum(x.success for x in self.episode_metrics),"total_terminated":sum(x.terminated for x in self.episode_metrics),"total_truncated":sum(x.truncated for x in self.episode_metrics),"state_visit_total":int(self.state_visit_counts.sum())}
@@ -139,7 +140,7 @@ def derive_sarsa_lambda_seeds(root):
     return SarsaLambdaSeeds(root,int(a.generate_state(1,dtype=np.uint64)[0]),int(b.generate_state(1,dtype=np.uint64)[0]))
 def build_sarsa_lambda_run_identity(mdp,config,seeds):
     rw=mdp.rewards
-    resolved={"schema_version":1,"algorithm":ALGORITHM_ID,"student":{"student_id":mdp.spec.student_id,"base_seed":mdp.spec.base_seed},"map":{"checksum":map_checksum(mdp.spec),"rows":mdp.spec.rows,"cols":mdp.spec.cols,"max_steps":mdp.spec.max_steps},"transitions":{"intended_probability":mdp.INTENDED_PROBABILITY,"perpendicular_slip_probability":mdp.SLIP_PROBABILITY},"rewards":{"step":rw.step,"collision_extra":rw.collision,"penalty_extra":rw.penalty,"first_key":rw.key,"goal":rw.goal,"shaping_scale":rw.shaping_scale},"shaping":{"enabled":config.reward_mode=="shaped","method":config.shaping_method,"version":config.shaping_version,"scale":rw.shaping_scale},"learning":{"gamma":config.gamma,"alpha":config.alpha,"lambda":config.trace_lambda,"episodes":config.episodes,"epsilon_start":config.epsilon_start,"epsilon_end":config.epsilon_end,"decay_episodes":config.decay_episodes,"schedule":config.schedule,"reward_mode":config.reward_mode,"diagnostic_episode":config.diagnostic_episode},"actions":{"order":list(ACTION_NAMES)},"seeds":{"root":seeds.root,"behavior":seeds.behavior,"transition":seeds.transition,"derivation":SEED_DERIVATION},"behavior_policy":{"identifier":BEHAVIOR_POLICY},"q_initialization":{"identifier":Q_INITIALIZATION},"traces":{"type":TRACE_TYPE,"update_order":TRACE_UPDATE_ORDER,"reset":TRACE_RESET},"episode_semantics":{"termination":"goal_no_bootstrap","truncation":TRUNCATION_SEMANTICS}}
+    resolved={"schema_version":1,"algorithm":ALGORITHM_ID,"student":{"student_id":mdp.spec.student_id,"base_seed":mdp.spec.base_seed},"map":{"checksum":map_checksum(mdp.spec),"rows":mdp.spec.rows,"cols":mdp.spec.cols,"max_steps":mdp.spec.max_steps},"transitions":{"intended_probability":mdp.INTENDED_PROBABILITY,"perpendicular_slip_probability":mdp.SLIP_PROBABILITY},"rewards":{"step":rw.step,"collision_extra":rw.collision,"penalty_extra":rw.penalty,"first_key":rw.key,"goal":rw.goal,"shaping_scale":rw.shaping_scale},"shaping":{"enabled":config.reward_mode=="shaped","method":config.shaping_method,"version":config.shaping_version,"scale":rw.shaping_scale},"learning":{"gamma":config.gamma,"alpha":config.alpha,"lambda":config.trace_lambda,"episodes":config.episodes,"epsilon_start":config.epsilon_start,"epsilon_end":config.epsilon_end,"decay_episodes":config.decay_episodes,"schedule":config.schedule,"reward_mode":config.reward_mode,"diagnostic_episode":config.diagnostic_episode},"actions":{"order":list(ACTION_NAMES)},"seeds":{"root":seeds.root,"behavior":seeds.behavior,"transition":seeds.transition,"derivation":seeds.derivation},"behavior_policy":{"identifier":BEHAVIOR_POLICY},"q_initialization":{"identifier":Q_INITIALIZATION},"traces":{"type":TRACE_TYPE,"update_order":TRACE_UPDATE_ORDER,"reset":TRACE_RESET},"episode_semantics":{"termination":"goal_no_bootstrap","truncation":TRUNCATION_SEMANTICS}}
     text=_canonical_json(resolved); digest=hashlib.sha256(text.encode()).hexdigest()
     return SarsaLambdaRunIdentity(text,digest,f"sarsa-lambda-{digest}")
 
@@ -161,12 +162,14 @@ def apply_sarsa_lambda_update(q_values,traces,*,state,intended_action,reward,nex
     else: traces[active] *= gamma*trace_lambda
     return TraceUpdate(state,action,ai,float(reward),next_state,None if next_ai is None else ACTION_ORDER[next_ai],next_ai,old,next_q,bootstrap,target,delta,count,terminated,truncated)
 
-def train_sarsa_lambda(mdp,config,*,root_seed,identity=None):
+def train_sarsa_lambda(mdp,config,*,root_seed,identity=None,learner_seeds=None):
     if config.reward_mode=="shaped" and (not mdp.use_shaping or mdp.gamma!=config.gamma): raise ValueError("shaped MDP must enable shaping with matching gamma")
     valid=valid_state_mask(mdp.spec); reachable=reachable_state_mask(mdp); terminal=terminal_state_mask(mdp.spec)
     q=dense_q_array(mdp.spec); q[valid]=0.; q[terminal]=0.; counts=np.zeros(valid.shape,np.int64); acounts=np.zeros(q.shape,np.int64)
     active_mask=np.broadcast_to((valid&~terminal)[...,None],q.shape)
-    seeds=derive_sarsa_lambda_seeds(root_seed); rid=build_sarsa_lambda_run_identity(mdp,config,seeds)
+    seeds=derive_sarsa_lambda_seeds(root_seed) if learner_seeds is None else learner_seeds
+    if not isinstance(seeds,SarsaLambdaSeeds) or seeds.root != root_seed: raise ValueError("learner seed root must match root_seed")
+    rid=build_sarsa_lambda_run_identity(mdp,config,seeds)
     if identity is not None and identity != rid: raise ValueError("precomputed identity mismatch")
     rng=np.random.default_rng(seeds.behavior); env=MazeEpisode(mdp,seed=seeds.transition); metrics=[]; diagnostics=[]; started=time.perf_counter()
     for ep in range(1,config.episodes+1):

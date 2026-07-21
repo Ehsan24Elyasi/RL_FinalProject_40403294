@@ -14,5 +14,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Generated smoke, development, and verification runs
+# Generated experiment, smoke, development, and verification runs
+results/experiments/
 results/pilots/

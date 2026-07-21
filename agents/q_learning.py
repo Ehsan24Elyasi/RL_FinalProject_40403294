@@ -55,7 +55,7 @@ class QLearningConfig:
     decay_episodes: int = 4_000
     schedule: str = "linear"
     reward_mode: str = "shaped"
-    audit_episode: int = 1
+    audit_episode: int | None = 1
     shaping_method: str = SUPPORTED_SHAPING_METHOD
     shaping_version: int = SHAPING_VERSION
 
@@ -74,8 +74,10 @@ class QLearningConfig:
             raise ValueError("schedule must be 'linear', 'exponential', or 'geometric'")
         if self.reward_mode not in REWARD_MODES:
             raise ValueError("reward_mode must be 'sparse' or 'shaped'")
-        if isinstance(self.audit_episode, bool) or not 1 <= self.audit_episode <= self.episodes:
-            raise ValueError("audit_episode must be within the configured episodes")
+        if self.audit_episode is not None and (
+                isinstance(self.audit_episode, bool) or not isinstance(self.audit_episode, int)
+                or not 1 <= self.audit_episode <= self.episodes):
+            raise ValueError("audit_episode must be None or within the configured episodes")
         if self.schedule in {"exponential", "geometric"} and self.epsilon_end == 0.0:
             raise ValueError("exponential/geometric epsilon_end must be positive")
         if self.shaping_method != SUPPORTED_SHAPING_METHOD:
@@ -89,6 +91,7 @@ class QLearningSeeds:
     root: int
     behavior: int
     transition: int
+    derivation: str = SEED_DERIVATION
 
     def __post_init__(self) -> None:
         values = (self.root, self.behavior, self.transition)
@@ -96,6 +99,8 @@ class QLearningSeeds:
             raise ValueError("Q-Learning seeds must be nonnegative integers")
         if self.behavior == self.transition:
             raise ValueError("behavior and transition seeds must be independent")
+        if not isinstance(self.derivation, str) or not self.derivation:
+            raise ValueError("seed derivation must be a nonempty string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,7 +341,8 @@ class QLearningResult:
             raise ValueError("episode metric count does not match configuration")
         if any(metric.episode != index for index, metric in enumerate(self.episode_metrics, 1)):
             raise ValueError("episode metrics are not sequential")
-        expected_audit_steps = self.episode_metrics[self.config.audit_episode - 1].steps
+        expected_audit_steps = (0 if self.config.audit_episode is None else
+                                self.episode_metrics[self.config.audit_episode - 1].steps)
         if len(self.audit_rows) != expected_audit_steps:
             raise ValueError("audit must capture every step of its configured episode")
         if any(row.episode != self.config.audit_episode for row in self.audit_rows):
@@ -369,7 +375,7 @@ class QLearningResult:
             "episodes": learning["episodes"], "epsilon_start": learning["epsilon_start"],
             "epsilon_end": learning["epsilon_end"], "decay_episodes": learning["decay_episodes"],
             "schedule": learning["schedule"], "reward_mode": learning["reward_mode"],
-            "audit_episode": learning["audit_episode"], "root_seed": seeds["root"],
+            "audit_episode": (-1 if learning["audit_episode"] is None else learning["audit_episode"]), "root_seed": seeds["root"],
             "behavior_seed": seeds["behavior"], "transition_seed": seeds["transition"],
             "seed_derivation": seeds["derivation"],
             "behavior_policy": resolved["behavior_policy"]["identifier"],
@@ -456,7 +462,7 @@ def build_q_learning_run_identity(mdp: MazeMDP, config: QLearningConfig,
                      "audit_episode": config.audit_episode},
         "actions": {"order": list(ACTION_NAMES)},
         "seeds": {"root": seeds.root, "behavior": seeds.behavior,
-                  "transition": seeds.transition, "derivation": SEED_DERIVATION},
+                  "transition": seeds.transition, "derivation": seeds.derivation},
         "behavior_policy": {"identifier": BEHAVIOR_POLICY,
                             "exploration": "uniform_all_actions",
                             "tie_breaking": "uniform_exact_max"},
@@ -517,7 +523,8 @@ def apply_q_learning_update(q_values: np.ndarray, *, state: State,
 
 
 def train_q_learning(mdp: MazeMDP, config: QLearningConfig, *, root_seed: int,
-                     identity: QLearningRunIdentity | None = None) -> QLearningResult:
+                     identity: QLearningRunIdentity | None = None,
+                     learner_seeds: QLearningSeeds | None = None) -> QLearningResult:
     if config.reward_mode == "shaped":
         if not mdp.use_shaping:
             raise ValueError("shaped reward mode requires an MDP with shaping enabled")
@@ -529,7 +536,9 @@ def train_q_learning(mdp: MazeMDP, config: QLearningConfig, *, root_seed: int,
     q_values[valid], q_values[terminal] = 0.0, 0.0
     state_visits = np.zeros(valid.shape, dtype=np.int64)
     state_action_visits = np.zeros(q_values.shape, dtype=np.int64)
-    seeds = derive_q_learning_seeds(root_seed)
+    seeds = derive_q_learning_seeds(root_seed) if learner_seeds is None else learner_seeds
+    if seeds.root != root_seed:
+        raise ValueError("learner seed root must match root_seed")
     resolved_identity = build_q_learning_run_identity(mdp, config, seeds)
     if identity is not None and identity != resolved_identity:
         raise ValueError("precomputed run identity does not match resolved training inputs")
@@ -666,7 +675,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _count_and_validate_csv(path: Path, *, run_id: str, semantic_config_hash: str,
-                            expected_rows: int, kind: str, audit_episode: int) -> int:
+                            expected_rows: int, kind: str, audit_episode: int | None) -> int:
     with path.open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         required = {"run_id", "semantic_config_hash", "episode"}
@@ -790,12 +799,12 @@ def validate_q_learning_bundle(manifest_path: Path | str, *,
         paths.episode_metrics, run_id=str(metadata["run_id"]),
         semantic_config_hash=str(metadata["semantic_config_hash"]),
         expected_rows=int(metadata["episodes"]), kind="episodes",
-        audit_episode=int(metadata["audit_episode"]))
+        audit_episode=(None if metadata["audit_episode"] is None else int(metadata["audit_episode"])))
     audit_rows = _count_and_validate_csv(
         paths.audit, run_id=str(metadata["run_id"]),
         semantic_config_hash=str(metadata["semantic_config_hash"]),
         expected_rows=int(audit_entry.get("row_count", -1)), kind="audit",
-        audit_episode=int(metadata["audit_episode"]))
+        audit_episode=(None if metadata["audit_episode"] is None else int(metadata["audit_episode"])))
     if int(metrics_entry.get("row_count", -1)) != episode_rows:
         raise ValueError("manifest episode row count mismatch")
     if int(audit_entry.get("row_count", -1)) != audit_rows:
